@@ -1,0 +1,994 @@
+Struktur folder lengkap framework dengan optimasi HTMX:
+
+root/
+├── app/
+│   └── Core/
+│       ├── Autoload/
+│       │   └── ClassLoader.php
+│       ├── Database/
+│       │   ├── Connection.php         # PDO multi-DB (SQLite default, MySQL, PgSQL) + prefix 'IDIOT_'
+│       │   └── QueryBuilder.php
+│       ├── Http/
+│       │   ├── Request.php            # Helper HTMX: isHtmx(), htmxTarget(), htmxTrigger()
+│       │   ├── Response.php           # Header HTMX: withHxTrigger(), withHxRedirect()
+│       │   └── Router.php             # Route collector & matcher
+│       ├── Security/
+│       │   ├── Auth.php               # Session, Remember Me, Intended URL, Google OAuth
+│       │   ├── Gate.php               # RBAC & Page-based CRUD permission checker
+│       │   └── RateLimiter.php        # Proteksi Brute force & Honeypot
+│       ├── View/
+│       │   ├── Template.php           # Layout runner (renderPosition, slot manager)
+│       │   └── ViewEngine.php         # Switcher otomatis: Full Page vs HTML Fragment
+│       ├── System/
+│       │   ├── CircuitBreaker.php     # Error backtrace inspector & auto-disable crash module
+│       │   ├── ConfigRepository.php   # Static in-memory config store
+│       │   └── Localization.php       # Language scanner & fallback
+│       └── Bootstrap.php              # Inisialisasi framework, session, & error handlers
+│
+├── languages/
+│   ├── language.en.php                # Master default translasi
+│   ├── language.id.php                # Bahasa Indonesia
+│   └── language.*.php                 # Auto-discovery bahasa baru
+│
+├── modules/
+│   ├── Auth/                          # Modul Login, Google OAuth, Remember Me
+│   │   ├── Controllers/
+│   │   ├── Models/
+│   │   ├── Views/
+│   │   │   ├── login.php              # Full page view
+│   │   │   └── fragments/             # Fragment khusus HTMX (misal: alert login error)
+│   │   ├── routes.php
+│   │   └── module.json
+│   │
+│   ├── Signup/                        # Modul Pendaftaran mandiri publik
+│   │   ├── Controllers/
+│   │   ├── Views/
+│   │   │   ├── signup.php
+│   │   │   └── fragments/             # Fragment validasi live input email/username
+│   │   ├── routes.php
+│   │   └── module.json
+│   │
+│   ├── PasswordReset/                 # Pemulihan akun via OTP WhatsApp
+│   │   ├── Controllers/
+│   │   ├── Services/
+│   │   │   └── WhatsAppGateway.php
+│   │   ├── Views/
+│   │   │   └── fragments/             # Countdown timer & form OTP hx-swap
+│   │   ├── routes.php
+│   │   └── module.json
+│   │
+│   ├── UserManagement/                # CRUD User & Custom Role Matrix
+│   │   ├── Controllers/
+│   │   ├── Models/
+│   │   ├── Views/
+│   │   │   ├── index.php
+│   │   │   ├── role_matrix.php
+│   │   │   └── fragments/             # Table row [hx-delete], search table body
+│   │   ├── routes.php
+│   │   └── module.json
+│   │
+│   ├── GlobalConfig/                  # Multi-DB, dynamic language selector, site toggle
+│   │   ├── Controllers/
+│   │   ├── Views/
+│   │   │   ├── index.php
+│   │   │   └── fragments/             # Tab body loader (hx-get tab content)
+│   │   ├── routes.php
+│   │   └── module.json
+│   │
+│   ├── LayoutManagement/              # Drag-and-drop module position kanban
+│   │   ├── Controllers/
+│   │   ├── Views/
+│   │   │   ├── kanban.php
+│   │   │   └── fragments/             # Slot dropzone fragment & toast notification
+│   │   ├── routes.php
+│   │   └── module.json
+│   │
+│   └── ModuleCreator/                 # 3-tab creator, code editor, ZIP packager
+│       ├── Controllers/
+│       ├── Services/
+│       │   ├── CodeLinter.php         # Pre-save syntax validation (php -l)
+│       │   └── ZipManager.php         # Export/import zip modul
+│       ├── Views/
+│       │   ├── wizard_tabs.php
+│       │   └── fragments/             # Editor file tree, live compile alert
+│       ├── routes.php
+│       └── module.json
+│
+├── public/
+│   ├── assets/
+│   │   ├── css/
+│   │   ├── js/
+│   │   │   ├── htmx.min.js            # Engine utama frontend
+│   │   │   ├── sortable.min.js        # Library drag-and-drop layout kanban
+│   │   │   └── codemirror/            # Code editor untuk ModuleCreator
+│   │   └── uploads/
+│   └── index.php                      # Single entry point
+│
+├── storage/
+│   ├── cache/                         # Dump array konfigurasi & translasi
+│   ├── database/                      # Lokasi file SQLite (IDIOT_*.sqlite)
+│   ├── logs/                          # Log error modul & circuit breaker
+│   └── temp/                          # Unpack ZIP modul sementara
+│
+├── templates/
+│   └── default/
+│       ├── layout.php                 # Master layout (header, sidebar slots, footer)
+│       └── maintenance.php            # Halaman statis 503
+│
+├── composer.json
+└── .env
+
+
+================================================================================
+MODUL: AUTHENTICATION & LOGIN (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan gerbang autentikasi yang aman, fleksibel, dan persisten via 
+kredensial lokal (email/password) maupun Google OAuth; terlindung dari serangan 
+brute force; mendukung pemulihan akun via OTP WhatsApp; menjaga kenyamanan sesi 
+pengguna melalui Remember Me dan navigasi presisi Intended URL; serta membatasi 
+akses modul berproteksi di seluruh framework.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Antarmuka:
+   - Endpoint login/logout: GET /login, POST /login, GET|POST /logout.
+   - Endpoint Google OAuth: GET /auth/google, GET /auth/google/callback.
+   - Endpoint WhatsApp OTP: GET|POST /forgot-password, GET|POST /reset-password.
+   - Form Login UI: Input kredensial, proteksi CSRF token, checkbox "Remember Me", 
+     tombol "Masuk dengan Google", tautan "Lupa Password?", serta tautan dinamis 
+     ke /signup (hanya muncul jika config('allow_registration') bernilai true).
+
+2. Intended URL Handling:
+   - Middleware/Auth Guard menyimpan URI tujuan saat user belum login mencoba 
+     mengakses route berproteksi: $_SESSION['intended_url'] = $_SERVER['REQUEST_URI'].
+   - Redirect pasca-login: jika $_SESSION['intended_url'] tersedia, arahkan ke URL 
+     tersebut dan hapus dari sesi; jika tidak ada, lempar ke /dashboard.
+
+3. Remember Me (Persistent Login):
+   - Buat tabel 'user_tokens' (id, user_id, selector, hashed_validator, expires_at).
+   - Saat dicentang: generate token selector & validator acak, simpan hash validator 
+     ke database, lalu pasang cookie 30 hari di browser.
+   - Autologin check pada core bootstrap: verifikasi cookie token saat session user 
+     kosong, lalu inisialisasi session jika token valid.
+
+4. Rate Limiting & Account Status Guard:
+   - Catat kegagalan login berdasarkan kombinasi IP Address dan Email.
+   - Blokir request POST /login selama 15 menit jika terjadi 5 kali kegagalan beruntun.
+   - Cek status akun di database: tolak login dengan pesan khusus jika user berstatus 
+     'banned' atau 'inactive'.
+   - Gunakan pesan error generik ("Email atau password salah") jika kredensial tidak cocok.
+
+5. Google OAuth 2.0:
+   - Generate URL otorisasi dengan state token di sesi untuk mencegah serangan CSRF.
+   - Di route callback: tukar authorization code menjadi access_token, ambil profil user.
+   - Account linking: jika email cocok dengan user lama, update 'google_id'. Jika belum 
+     ada, daftarkan otomatis (auto-provisioning) dengan role 'member' dan password NULL.
+
+6. Reset Password via WhatsApp OTP:
+   - Validasi ketersediaan kolom nomor WhatsApp di tabel 'users'.
+   - Buat tabel 'password_resets' (phone, token, expires_at).
+   - Kirim OTP 6-digit via WhatsApp Gateway API dengan masa berlaku 10 menit.
+   - Terapkan cooldown pengiriman ulang minimal 60 detik per nomor telepon.
+
+7. Session Security & Audit Trail:
+   - Pasang parameter cookie session: httponly=true, samesite=Lax, secure=HTTPS.
+   - Eksekusi session_regenerate_id(true) segera setelah login berhasil.
+   - Catat last_login_at dan last_login_ip di tabel 'users'.
+   - Saat logout: session_destroy(), hapus token Remember Me dari database dan cookie.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] User berhasil login dengan kombinasi email & password yang valid.
+[ ] User berhasil login satu klik via Google OAuth tanpa duplikasi akun email.
+[ ] User yang belum login dan mengakses halaman internal diarahkan ke /login, lalu 
+    otomatis dikembalikan ke halaman semula setelah login sukses (Intended URL).
+[ ] User yang mencentang "Remember Me" tetap login meski browser ditutup/reboot.
+[ ] Form login terkunci otomatis selama 15 menit jika salah input 5 kali beruntun.
+[ ] Akun dengan status 'banned' atau 'inactive' diblokir dari proses login.
+[ ] User bisa mereset password menggunakan kode OTP yang diterima via pesan WhatsApp.
+[ ] Token reset WhatsApp hangus setelah 10 menit atau setelah berhasil dipakai 1 kali.
+[ ] Tombol/link SignUp otomatis tersembunyi jika registrasi ditutup di Global Config.
+[ ] Logout membersihkan seluruh session, cookie browser, dan record token persistensi.
+================================================================================
+
+================================================================================
+MODUL: SIGNUP / REGISTRATION (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan alur pendaftaran mandiri bagi pengunjung publik dengan validasi data 
+yang ketat (termasuk verifikasi format nomor WhatsApp); terlindung dari serangan 
+bot/spam; memberikan role awal dengan hak akses terendah; serta tunduk penuh pada 
+kontrol toggle registrasi di Global Config.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Antarmuka:
+   - Endpoint pendaftaran: GET /signup dan POST /signup.
+   - Form UI: Input Nama Lengkap, Email, Nomor WhatsApp, Password, dan Konfirmasi 
+     Password. Sertakan CSRF token dan tautan navigasi balik ke /login ("Sudah punya 
+     akun? Masuk di sini").
+
+2. Global Config Gatekeeper:
+   - Pasang filter di controller/middleware sebelum halaman dirender:
+     Jika config('allow_registration') bernilai false, cegah proses pendaftaran, 
+     tampilkan halaman informasi "Registrasi sedang ditutup", atau redirect ke /login 
+     disertai flash message.
+
+3. Validasi & Sanitasi Input:
+   - Email: Wajib format email valid dan belum terdaftar di tabel 'users'.
+   - Nomor WhatsApp: Validasi format nomor (format internasional/lokal, misal 08xx/628xx), 
+     wajib unik agar fitur OTP reset password tidak salah sasaran.
+   - Password: Wajib minimal 8 karakter dan bernilai identik dengan konfirmasi password.
+   - Sanitasi input nama untuk mencegah injeksi XSS.
+
+4. Pertahanan Anti-Bot & Rate Limiting:
+   - Honeypot Trap: Pasang satu input tersembunyi via CSS (misal name="website_url"). 
+     Jika field ini terisi saat form di-submit, sistem langsung menggagalkan proses 
+     tanpa memproses database (indikasi spam-bot).
+   - Registration Rate Limit: Batasi pengiriman form signup maksimal 3-5 kali per 
+     jam dari IP Address yang sama untuk mencegah pembajakan database lewat script.
+
+5. Penyimpanan Data & Proteksi Hak Akses (Least Privilege):
+   - Enkripsi password menggunakan password_hash($password, PASSWORD_BCRYPT/ARGON2ID).
+   - Kunci penetapan role secara mutlak di backend ke level terendah: 'member'. 
+     Abaikan parameter role apa pun yang dikirim lewat form request.
+   - Set status akun default ke 'active' (atau 'pending' jika butuh verifikasi admin).
+
+6. Alur Pasca-Daftar (Post-Registration Flow):
+   - Auto-Login UX: Begitu data tersimpan, regenerasi sesi dan langsung inisialisasi 
+     session user (otomatis login) lalu lempar ke /dashboard; ATAU
+   - Redirect Login: Lempar user ke halaman /login dengan notifikasi sukses "Akun 
+     berhasil dibuat, silakan masuk".
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Form pendaftaran memproses pendaftaran akun baru dengan data valid secara sukses.
+[ ] Sistem menolak registrasi jika email atau nomor WhatsApp sudah terdaftar.
+[ ] Konfirmasi password yang tidak cocok memunculkan pesan error yang jelas.
+[ ] Bot yang mengisi input honeypot otomatis ditolak oleh sistem.
+[ ] Route /signup tidak bisa diakses sama sekali jika registrasi dimatikan di Global Config.
+[ ] Setiap user baru otomatis memiliki role 'member' tanpa celah injeksi privilege admin.
+[ ] User yang baru mendaftar langsung dialihkan ke dashboard / halaman login dengan status siap pakai.
+[ ] Rate limiting IP berhasil menahan flooding pembuatan akun massal.
+================================================================================
+
+================================================================================
+MODUL: PASSWORD RESET / RECOVERY (CORE MODULE)
+================================================================================
+
+[GOAL]
+Memfasilitasi pemulihan akses akun mandiri via OTP WhatsApp khusus bagi pengguna 
+yang mendaftar secara manual (memiliki password lokal); memproteksi sistem dari spam 
+gateway; serta menolak permintaan reset bagi akun yang terdaftar via Google OAuth.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Antarmuka:
+   - Endpoint Permintaan: GET /forgot-password dan POST /forgot-password.
+   - Endpoint Verifikasi OTP: GET /verify-otp dan POST /verify-otp.
+   - Endpoint Set Password Baru: GET /reset-password dan POST /reset-password.
+   - UI Form: 
+     a. Form 1: Input nomor WhatsApp terdaftar.
+     b. Form 2: Input 6-digit OTP + timer hitung mundur 60 detik.
+     c. Form 3: Input Password Baru dan Konfirmasi Password Baru.
+
+2. Provider Check Guard (Pemisah Akun Manual vs Google):
+   - Di awal proses POST /forgot-password, periksa status kredensial user:
+     a. Jika akun memiliki 'google_id' dan kolom 'password' bernilai NULL, hentikan 
+        proses dan tampilkan pesan: "Akun ini terdaftar via Google Sign-In. Silakan 
+        langsung masuk menggunakan tombol Masuk dengan Google."
+     b. Proses pengiriman OTP HANYA dilanjutkan jika akun memiliki password lokal 
+        (password IS NOT NULL).
+
+3. Database Schema:
+   - Tabel 'password_resets':
+     - id (bigint, PK)
+     - user_id (bigint, FK ke users)
+     - phone (varchar)
+     - otp_hash (varchar, hash dari 6 digit kode OTP)
+     - reset_token (varchar, token validasi pembuka form password baru)
+     - attempts (int, default 0, batas salah input)
+     - expires_at (timestamp, masa berlaku 10 menit)
+     - created_at (timestamp)
+
+4. Integrasi WhatsApp Gateway & Anti-Spam:
+   - Cooldown Pengiriman: Kunci resend OTP minimal 60 detik per nomor telepon.
+   - Rate Limit IP: Maksimal 3 request per jam dari IP yang sama.
+   - Format Pesan: "Kode verifikasi reset password kamu: [OTP]. Berlaku 10 menit. 
+     JANGAN berikan kode ini ke siapa pun."
+
+5. Verifikasi OTP & Brute Force Guard:
+   - Batasi percobaan salah input OTP maksimal 3 kali. Jika melebihi batas, hapus 
+     record OTP dan paksa user mengulang dari awal.
+   - Jika OTP valid, terbitkan 'reset_token' sementara (aktif 5 menit) untuk 
+     membuka form input password baru.
+
+6. Eksekusi Password Baru & Sesi:
+   - Validasi panjang password baru minimal 8 karakter.
+   - Update tabel 'users' dengan password hash baru.
+   - Hapus record token di 'password_resets' agar tidak bisa dipakai ulang.
+   - Hapus semua sesi 'Remember Me' user tersebut di tabel 'user_tokens' untuk 
+     memutus akses di perangkat lain.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Sistem menolak permintaan reset jika akun terdaftar via Google OAuth (password NULL).
+[ ] Permintaan OTP hanya berhasil diproses untuk akun manual yang memiliki password lokal.
+[ ] Pesan WhatsApp berisi kode OTP 6 digit diterima user terdaftar dalam hitungan detik.
+[ ] Tombol kirim ulang terkunci selama 60 detik setelah request pertama.
+[ ] Kode OTP kedaluwarsa otomatis dan tidak bisa digunakan setelah 10 menit.
+[ ] Upaya salah input OTP lebih dari 3 kali langsung membatalkan sesi pemulihan.
+[ ] Form password baru tertolak jika tidak menyertakan reset_token yang valid.
+[ ] Password baru langsung aktif untuk login dan token Remember Me lama tercabut.
+================================================================================
+
+
+================================================================================
+MODUL: USER & ROLE MANAGEMENT (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan panel kendali terpusat untuk mengelola data pengguna (CRUD), status 
+akun, serta sistem hak akses dinamis berbasis grup peran (Custom Roles) dengan 
+matriks izin granular tingkat halaman (Page-based CRUD: Create, Read, Update, Delete); 
+sambil tetap mengunci hak akses mutlak Superadmin (ID 1).
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint Pengguna:
+     - GET  /admin/users             (Daftar user + filter + pagination)
+     - GET  /admin/users/create      (Form tambah user)
+     - POST /admin/users             (Simpan user baru)
+     - GET  /admin/users/{id}/edit   (Form edit profil & assignment role)
+     - POST /admin/users/{id}        (Simpan update user)
+     - POST /admin/users/{id}/status (Toggle status: active / banned)
+     - POST /admin/users/{id}/delete (Hapus user)
+   - Endpoint Custom Roles & Permissions:
+     - GET  /admin/roles                  (Daftar grup role)
+     - GET  /admin/roles/create           (Form tambah role baru)
+     - POST /admin/roles                  (Simpan role baru)
+     - GET  /admin/roles/{id}/permissions (Form matriks checklist izin CRUD per halaman)
+     - POST /admin/roles/{id}/permissions (Simpan konfigurasi izin role)
+     - POST /admin/roles/{id}/delete      (Hapus custom role)
+
+2. Skema Database Role & Permission Matrix:
+   - Tabel 'roles':
+     - id (bigint, PK)
+     - name (varchar, misal: "Content Editor", "Finance Staff")
+     - slug (varchar, unique, misal: "editor", "finance")
+     - is_system (tinyint, 1 = role bawaan seperti superadmin/member, 0 = custom)
+   - Tabel 'role_permissions' (Granular Page CRUD):
+     - id (bigint, PK)
+     - role_id (bigint, FK ke roles)
+     - page_slug (varchar, pengenal halaman/modul, misal: "users", "articles", "settings")
+     - can_create (tinyint, 0 atau 1)
+     - can_read   (tinyint, 0 atau 1)
+     - can_update (tinyint, 0 atau 1)
+     - can_delete (tinyint, 0 atau 1)
+
+3. Antarmuka Matriks Permission (Page-based):
+   - Di halaman /admin/roles/{id}/permissions, sajikan tabel matriks yang membaca 
+     daftar seluruh modul/halaman yang terdaftar di sistem.
+   - Baris: Nama Halaman / Modul (Users, Articles, Global Config, dll).
+   - Kolom: Checkbox untuk Create [C], Read [R], Update [U], Delete [D], serta 
+     checkbox pintasan "Check All" per baris.
+
+4. Permission Guard (Enforcement Engine):
+   - Buat helper/gate terpusat di core framework, misal: 
+     can('users', 'create') atau Gate::allows('articles', 'delete').
+   - Logika Pengecekan:
+     a. Superadmin Bypass: Jika role user adalah 'superadmin', return true seketika 
+        untuk seluruh aksi tanpa perlu query tabel permission.
+     b. Role Khusus: Cek data tabel 'role_permissions' sesuai role_id user, page_slug, 
+        dan aksi CRUD yang diminta.
+     c. Jika bernilai 0 atau tidak ada relasi, tolak aksi dengan response 403 Forbidden.
+
+5. Proteksi Sistem (System & Superadmin Guard):
+   - Role 'superadmin' dan user ID 1 memiliki status mutlak (is_system = 1):
+     - Tidak bisa dihapus dari database.
+     - Tidak bisa diubah izin dasarnya.
+     - Role bawaan sistem tidak bisa di-rename atau dihilangkan.
+   - Self-Protection: User tidak bisa menghapus rolenya sendiri atau menghapus 
+     akun miliknya sendiri dari panel admin.
+
+6. Manajemen Status Akun & Provider:
+   - Panel membedakan visual akun pendaftaran lokal vs akun Google OAuth.
+   - Aksi 'banned' langsung mematikan akses, membersihkan token Remember Me di 
+     'user_tokens', dan memblokir request berikutnya via Auth Guard.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Admin bisa membuat grup role baru (misal: "Staf Penulis", "Operator").
+[ ] Admin bisa mengatur izin Create, Read, Update, Delete per modul/halaman 
+    lewat form checklist matriks.
+[ ] User yang diberi custom role hanya bisa menjalankan aksi CRUD yang diizinkan 
+    (misal: bisa buka halaman dan edit, tapi tombol tambah/hapus diblokir).
+[ ] Request direct URL untuk aksi terlarang otomatis dicegat oleh Permission Guard 
+    (403 Forbidden).
+[ ] Role 'superadmin' otomatis memiliki akses 100% tanpa konfigurasi manual.
+[ ] Role bawaan sistem (is_system = 1) dan User ID 1 terlindungi dari hapus/edit ilegal.
+[ ] Akun dengan status 'banned' langsung terputus dari sesi aktif.
+================================================================================
+
+================================================================================
+MODUL: GLOBAL CONFIG (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan pusat pengaturan operasional sistem terpadu (identitas web, otentikasi, 
+integrasi API, dan mode pemeliharaan); mendukung konektivitas multi-database 
+(MySQL, PostgreSQL, SQLite) dengan standarisasi prefix pada nama database ('IDIOT_'); 
+serta mengelola sistem lokalisasi bahasa dinamis berbasis file auto-discovery 
+(default English) dengan pembacaan instan dalam memori.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint:
+     - GET  /admin/configs        (Panel pengaturan bertab)
+     - POST /admin/configs        (Simpan seluruh konfigurasi)
+   - Gate Guard: Hanya dapat diakses oleh user ber-role 'superadmin'.
+
+2. Standarisasi Multi-DB (Database Name Prefix):
+   - Database Connection Engine (Core PDO Wrapper):
+     - Mendukung 3 driver: 'mysql', 'pgsql', dan 'sqlite'.
+     - Aturan Penamaan DB: Prefix 'IDIOT_' diterapkan khusus pada nama database 
+       (contoh MySQL/PostgreSQL: database `IDIOT_myapp`; SQLite: `IDIOT_database.sqlite`).
+     - Nama tabel di dalam database tetap normal tanpa modifikasi prefix.
+   - Skema Tabel 'configs':
+     - id (bigint, PK)
+     - group (varchar, misal: 'general', 'auth', 'oauth', 'whatsapp', 'localization')
+     - key (varchar, unique, misal: 'site_name', 'default_language')
+     - value (text, nullable)
+     - type (varchar, default 'string')
+     - updated_at (timestamp)
+
+3. Dynamic Language Auto-Discovery Engine:
+   - Struktur Folder: `languages/` (atau `app/Languages/`).
+   - Format File: `language.{code}.php` (contoh: `language.en.php`, `language.id.php`).
+     Tiap file mengembalikan array translasi: `return ['welcome' => 'Welcome', ...];`.
+   - Auto-Discovery Scanner:
+     - Engine memindai folder menggunakan pola `glob('languages/language.*.php')`.
+     - Ekstrak kode bahasa dari nama file secara dinamis via regex/string parser.
+     - Setiap ada penambahan file baru (misal: `language.tk.php`), bahasa 'tk' 
+       otomatis terdaftar ke sistem dan langsung muncul sebagai opsi di UI admin 
+       maupun language switcher publik tanpa perlu restart aplikasi atau ubah database.
+   - Default & Fallback:
+     - Nilai bawaan sistem: English ('en').
+     - Sediakan helper translasi global: `__('key')` atau `lang('key')`.
+     - Jika kata kunci tidak ditemukan pada bahasa aktif, otomatis fallback ke 
+       frasa dari `language.en.php`.
+
+4. Kategori Pengaturan di Antarmuka UI (Tabbed Layout):
+   - Tab General:
+     - Nama Situs, Deskripsi, Base URL, Favicon & Logo.
+     - Default Language: Dropdown pilihan bahasa yang isinya terisi otomatis 
+       dari hasil scan file `language.*.php` yang tersedia di folder bahasa.
+   - Tab Auth & Registration:
+     - Toggle registrasi publik (allow_registration).
+     - Batas percobaan brute force login.
+   - Tab Google OAuth:
+     - Client ID, Client Secret, Redirect URI.
+   - Tab WhatsApp Gateway:
+     - Gateway API URL, Token/Secret Key, Nomor Pengirim.
+   - Tab Maintenance & System:
+     - Toggle status mode pemeliharaan (maintenance_mode).
+     - Informasi Driver DB aktif & Nama Database (berawalan IDIOT_).
+
+5. Engine Akses Global (Config Loader & Caching):
+   - Muat seluruh isi tabel configs ke dalam array statis saat proses bootstrapping.
+   - Sediakan helper global `config('key', 'default')` yang membaca dari memori.
+   - Opsi dump cache ke file flat PHP saat mode produksi aktif untuk performa maksimal.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Koneksi database berjalan pada MySQL, PostgreSQL, dan SQLite menggunakan 
+    nama database ber-prefix IDIOT_*.
+[ ] Tabel configs terpasang dan dapat membaca/menulis data pengaturan sistem.
+[ ] Sistem bahasa default disetel ke English ('en') dan tersedia opsi Indonesian ('id').
+[ ] Penambahan file baru seperti 'language.tk.php' langsung membuat bahasa 'tk' 
+    muncul di dropdown pilihan bahasa admin tanpa konfigurasi manual tambahan.
+[ ] Fungsi translasi __() atau lang() berhasil menampilkan teks sesuai bahasa 
+    aktif dan beralih ke file English jika kata kunci belum diterjemahkan.
+[ ] Perubahan nilai pengaturan langsung berefek seketika di seluruh modul via 
+    helper config('key').
+[ ] Pengunjung non-admin diblokir saat maintenance mode aktif.
+================================================================================
+
+================================================================================
+MODUL: LAYOUT & MODULE MANAGEMENT (CORE MODULE)
+================================================================================
+
+[GOAL]
+Mengelola siklus hidup seluruh modul (auto-discovery, aktivasi/deaktivasi) serta 
+memetakan komponen UI modul ke slot posisi template (header, sidebar kiri, 
+sidebar kanan, content, footer) menggunakan antarmuka interaktif drag-and-drop 
+dengan update posisi instan via AJAX; sambil mengunci status modul inti sistem 
+(is_system = 1) agar tidak bisa dimatikan atau dihapus.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint Modul Registry:
+     - GET  /admin/modules               (Daftar modul terinstal & terdeteksi)
+     - POST /admin/modules/{slug}/toggle (Toggle status: aktif / nonaktif)
+   - Endpoint Layout & Position (Drag-and-Drop):
+     - GET  /admin/layouts               (Kanban/Slot board layout builder)
+     - POST /admin/layouts/save-order    (AJAX endpoint penerima JSON susunan baru)
+     - POST /admin/layouts/{id}/remove   (Copot modul dari posisi via tombol/drop ke pool)
+   - Gate Guard: Hanya dapat diakses oleh user dengan role 'superadmin'.
+
+2. Skema Database:
+   - Tabel 'modules':
+     - id (bigint, PK)
+     - slug (varchar, unique, misal: 'user', 'login', 'recent_posts')
+     - name (varchar)
+     - version (varchar, default '1.0.0')
+     - is_active (tinyint, 1 = aktif, 0 = nonaktif)
+     - is_system (tinyint, 1 = modul core wajib, 0 = modul kustom)
+     - created_at, updated_at
+   - Tabel 'module_positions':
+     - id (bigint, PK)
+     - module_slug (varchar, relasi ke modules.slug)
+     - position (varchar: 'header', 'sidebar_left', 'sidebar_right', 'footer')
+     - sort_order (int, default 0)
+     - is_active (tinyint, default 1)
+
+3. Antarmuka UI Drag-and-Drop (Visual Slot Builder):
+   - Layout Kanban Slot: Tampilan visual membagi area halaman menjadi drop-zones:
+     [Header], [Sidebar Kiri], [Konten Utama], [Sidebar Kanan], [Footer], serta 
+     kolom khusus [Modul Tersedia / Pool].
+   - Interaksi UI (Sortable.js / HTML5 Drag and Drop):
+     a. Admin dapat menyeret (drag) kartu modul dari area pool ke posisi slot manapun.
+     b. Admin dapat memindahkan kartu modul antar-posisi (misal: dari sidebar kiri 
+        pindah ke footer).
+     c. Admin dapat mengubah susunan vertikal (urutan eksekusi) di dalam slot yang sama.
+   - Auto-Save Asynchronous (AJAX):
+     - Setiap aksi 'drop' selesai, frontend membaca urutan DOM dan mengirim payload 
+       JSON ke endpoint `POST /admin/layouts/save-order`:
+       `{ positions: { "sidebar_left": ["user_login", "recent_posts"], "footer": ["newsletter"] } }`
+     - Backend melakukan bulk-update kolom 'position' dan 'sort_order' dalam 1 transaksi DB.
+     - Tampilkan indikator toast kecil ("Posisi berhasil disimpan") tanpa reload halaman.
+
+4. Module Auto-Discovery & System Guard:
+   - Scanner Engine memindai folder `modules/` untuk membaca manifest `module.json`.
+   - Modul inti (is_system = 1) terlindungi:
+     - Kartu modul sistem di UI ditandai badge permanen "SYSTEM".
+     - Modul sistem tidak memiliki tombol hapus / disable.
+     - Backend menolak request penonaktifan terhadap modul yang memiliki flag is_system = 1.
+
+5. Layout Slot Rendering Engine:
+   - Template utama memanggil helper slot: `<?= $this->renderPosition('sidebar_left') ?>`
+   - Engine mengambil modul di slot terkait yang berstatus aktif, diurutkan via 
+     `ORDER BY sort_order ASC` (sesuai hasil urutan drop terakhir).
+   - Eksekusi method modul (`$module->renderWidget($position)`), tangkap output HTML 
+     menggunakan output buffering, lalu cetak langsung ke halaman.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Tampilan panel layout menyajikan kanban board visual berbasis slot posisi.
+[ ] Admin bisa menarik (drag) dan melepas (drop) kartu modul antar-posisi dengan lancar.
+[ ] Admin bisa menggeser urutan modul naik/turun di dalam posisi yang sama via drag-and-drop.
+[ ] Setiap kali kartu modul di-drop, susunan baru tersimpan otomatis via AJAX tanpa refresh halaman.
+[ ] Helper renderPosition() merender modul di frontend persis sesuai urutan visual hasil drag-and-drop.
+[ ] Modul inti (is_system = 1) terkunci aman dan tidak bisa dimatikan atau dihapus.
+[ ] Modul yang digeser keluar atau dinonaktifkan otomatis hilang dari tampilan web publik.
+================================================================================
+
+
+================================================================================
+MODUL: MODULE EDITOR & CREATOR (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan antarmuka visual terpadu bagi superadmin untuk membuat modul baru via 
+wizard 3-tab interaktif ber-syntax highlighting (Controller, Model, View); mengedit 
+dan menerapkan perubahan kode secara instan (hot-reload/live apply); memproteksi 
+sistem secara otomatis via Circuit Breaker (auto-disable modul bermasalah jika memicu 
+fatal error); serta menyediakan fitur portabilitas ekosistem melalui Export/Import ZIP.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint Creator & Editor:
+     - GET  /admin/modules/creator        (Form wizard create module 3-tab)
+     - POST /admin/modules/creator        (Simpan & buat berkas modul lengkap)
+     - GET  /admin/modules/{slug}/editor  (File tree & workspace code editor)
+     - POST /admin/modules/{slug}/save    (Simpan perubahan kode langsung)
+     - POST /admin/modules/{slug}/delete  (Hapus berkas fisik modul kustom)
+   - Endpoint Portabilitas (Export & Import):
+     - GET  /admin/modules/{slug}/export  (Generate & download paket ZIP modul)
+     - POST /admin/modules/import         (Upload & ekstrak paket ZIP modul)
+   - Gate Guard: Akses eksklusif hanya untuk role 'superadmin'.
+
+2. Wizard Pembuatan 3-Tab (Auto-Scaffold & Multi-Editor):
+   - Input Header: Nama Modul, Slug, Versi, dan Deskripsi.
+   - Antarmuka Tab Navigasi:
+     - Tab 1: Controller (`{Name}Controller.php`)
+     - Tab 2: Model (`{Name}Model.php`)
+     - Tab 3: View (`index.php`)
+   - Pre-filled Dynamic Boilerplate:
+     - Begitu input nama modul diisi (misal: "Product"), ketiga tab otomatis 
+       mengisi boilerplate kode dengan namespace yang relevan (`Modules\Product\...`) 
+       dan kode dasar siap pakai.
+   - Instance Multi-Code-Editor:
+     - Tiap tab memiliki instance code editor independen (CodeMirror / Ace Editor) 
+       dengan tema gelap/terang dan mode PHP Syntax Highlighting bawaan.
+   - Tombol "Save & Apply": Sekali klik langsung memvalidasi, membuat struktur folder, 
+     menulis 3 berkas kode sekaligus, membuat `module.json`, mendaftarkannya ke database, 
+     dan mengaktifkan modul ke sistem yang sedang berjalan.
+
+3. Sistem Isolasi Error & Auto-Killswitch (Circuit Breaker Engine):
+   - Runtime Module Execution Sandbox:
+     - Saat bootstrapping atau rendering modul, bungkus pemanggilan controller/widget 
+       ke dalam blok pelindung: `try { ... } catch (\Throwable $e) { ... }`.
+   - Global Error Handler & Backtrace Inspector:
+     - Daftarkan `register_shutdown_function()` dan `set_error_handler()` khusus 
+       untuk menangkap unhandled fatal error / compile error.
+     - Analisis path file pemicu crash menggunakan `$e->getFile()` atau `error_get_last()`.
+   - Dynamic Fault Detection & Forced Deactivation:
+     - Jika error berasal dari direktori `modules/{nama_modul}/`:
+       1. Sistem mendeteksi slug modul penyebab crash secara presisi.
+       2. Lakukan update darurat ke database: `UPDATE modules SET is_active = 0 WHERE slug = :slug`.
+       3. Jika superadmin sedang login (Mode Admin), tampilkan banner alert darurat:
+          "PERINGATAN SISTEM: Modul [{slug}] memicu Fatal Error dan otomatis 
+          DINONAKTIFKAN demi mencegah crash sistem. Pesan: [Detail Pesan Error] pada baris [X]."
+       4. Render sisa template framework secara normal tanpa mematikan seluruh web (Zero WSOD).
+
+4. Fitur Export Modul (ZIP Packager):
+   - Eksekusi via library bawaan PHP `ZipArchive`.
+   - Backend membaca seluruh isi folder `modules/{slug}/` (termasuk subfolder, asset, 
+     dan file `module.json`).
+   - Kemas ke dalam satu file arsip: `{slug}-v{version}.zip`.
+   - Kirim sebagai HTTP Stream Download ke browser superadmin, lalu bersihkan file 
+     arsip temporary dari server.
+
+5. Fitur Import Modul (ZIP Installer & Validator):
+   - Superadmin mengunggah file `.zip` via modal upload di panel modul.
+   - Pemeriksaan Keamanan Paket (Anti-Zip Slip):
+     - Buka arsip dan periksa nama berkas di dalamnya. Tolak dan hapus file jika ada 
+       indikasi path traversal (misal nama berkas mengandung `../` atau path absolut).
+     - Validasi keberadaan file wajib `module.json` di root arsip ZIP.
+   - Conflict & Override Guard:
+     - Cek apakah slug modul yang diimpor bentrok dengan modul sistem (`is_system = 1`). 
+       Jika iya, batalkan proses ekstrak seketika.
+   - Ekstraksi & Aktivasi:
+     - Ekstrak isi ZIP ke folder baru `modules/{slug}/`.
+     - Lakukan validasi sintaks PHP (linting) pada seluruh berkas `.php` hasil ekstrak.
+     - Daftarkan metadata ke tabel 'modules' dengan status aktif (`is_active = 1`).
+
+6. Pertahanan Keamanan & File Integrity:
+   - Path Traversal Guard: Sanitasi mutlak seluruh request baca/tulis file agar 
+     terkurung 100% di dalam direktori `modules/` menggunakan verifikasi `realpath()`.
+   - System Module Guard: Tombol hapus, impor-timpa, atau ekspor untuk modul inti 
+     sistem (`is_system = 1`) diblokir total di backend.
+   - Pre-Save Linting: Sebelum berkas disimpan dari editor, jalankan validasi `php -l` 
+     pada buffer sementara. Batalkan penyimpanan jika terdapat syntax error.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Halaman Create Module menyajikan 3 tab terpisah (Controller, Model, View) yang 
+    masing-masing memiliki code editor aktif dengan PHP syntax highlighting.
+[ ] Template kode terisi otomatis secara dinamis menyesuaikan nama modul yang diinput.
+[ ] Menekan tombol "Save & Apply" langsung membuat berkas, mendaftarkan modul ke database, 
+    dan modul langsung aktif tanpa perlu merestart web server.
+[ ] Jika terdapat syntax/runtime error fatal pada modul kustom, sistem otomatis:
+    - Mendeteksi nama modul penyebabnya.
+    - Mengubah status modul tersebut menjadi `is_active = 0` di database.
+    - Menampilkan detail pesan error di layar panel admin tanpa terjadi WSOD.
+    - Membiarkan modul-modul lain dan inti framework tetap berjalan normal.
+[ ] Modul kustom bisa diunduh dalam bentuk file ZIP yang rapi dan terstruktur.
+[ ] Modul berekstensi ZIP dapat diunggah, diekstrak, dan langsung terpasang otomatis.
+[ ] Proteksi Anti-Zip Slip dan Path Traversal aktif memblokir berkas manipulatif.
+[ ] Modul sistem (is_system = 1) terlindungi mutlak dari aksi hapus maupun overwrite ZIP.
+================================================================================
+
+================================================================================
+MODUL: DEFAULT LANDING PAGE (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan halaman beranda (front-page) default yang bersih, ramah SEO, dan 
+mudah dikustomisasi kontennya oleh admin; menjadi tempat mendarat bagi pengunjung 
+umum dan pengguna ber-role 'member'; serta mendukung integrasi komponen modular 
+dan interaksi dinamis HTMX.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint Publik:
+     - GET /                      (Menampilkan landing page default jika diset aktif)
+   - Endpoint Pengelolaan Konten:
+     - GET  /admin/landing-page   (Form editor konten landing page)
+     - POST /admin/landing-page   (Simpan perubahan teks, CTA, dan hero section)
+   - Gate Guard: Akses publik untuk melihat; akses edit hanya untuk 'admin'/'superadmin'.
+
+2. Struktur Konten Dinamis (Section-Based):
+   - Hero Section: Headline, Sub-headline, Tombol Call to Action (Link ke /signup atau /login), dan Banner Media.
+   - Feature Section: 3-4 kolom sorotan fitur/keunggulan web.
+   - Slot Positions Integration:
+     - Menyediakan slot injeksi modul di dalam body landing page:
+       `<?= $this->renderPosition('landing_content') ?>`
+     - Modul kustom lain (seperti slider, list postingan, form kontak) bisa 
+       ditempelkan ke landing page via modul Layout Management.
+
+3. Kustomisasi & Penyimpanan:
+   - Data konten disimpan di tabel 'landing_contents' (key-value / JSON payload) 
+     atau langsung terintegrasi dengan tabel 'configs'.
+   - Optimasi HTMX: Update preview teks dan gambar secara live di panel admin 
+     menggunakan hx-post tanpa reload halaman.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Pengunjung umum dan member yang membuka URL root (/) langsung melihat landing page.
+[ ] Admin bisa mengedit teks headline, deskripsi, dan tombol CTA dari panel admin.
+[ ] Slot posisi di dalam landing page berhasil memuat modul widget yang dipasangkan.
+[ ] Tampilan responsif di layar mobile maupun desktop.
+================================================================================
+
+================================================================================
+MODUL: ADMIN DASHBOARD & SYSTEM HEALTH (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan pusat kendali visual satu layar bagi superadmin/admin untuk memantau 
+metrik kunci sistem (jumlah user, status database, penggunaan storage) serta status 
+kesehatan modul secara langsung pasca-login.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint:
+     - GET /admin/dashboard           (Halaman dashboard utama)
+     - GET /admin/dashboard/health    (HTMX poller: cek status DB & modul realtime)
+   - Gate Guard: Akses tertutup rapat, hanya untuk role 'admin' dan 'superadmin'.
+
+2. Metrik Kunci & Kartu Ringkasan (Cards):
+   - User Stats: Total user, user baru hari ini, jumlah user aktif vs banned.
+   - Modul Stats: Total modul terpasang, modul aktif, dan modul nonaktif.
+   - Server & DB Info: Driver aktif (MySQL / PostgreSQL / SQLite), nama database 
+     (prefix IDIOT_*), versi PHP, dan pemakaian memori/disk server.
+
+3. Live System Health Monitor (HTMX Poller):
+   - Pasang widget health check yang memanggil endpoint `/admin/dashboard/health` 
+     secara berkala menggunakan atribut `hx-trigger="every 30s"`.
+   - Alert Banner Darurat: Jika Circuit Breaker mendeteksi ada modul yang crash 
+     dan dimatikan otomatis, kartu alert merah langsung muncul di bagian paling atas 
+     disertai tombol pintasan "Buka Log Crash".
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Admin langsung diarahkan ke halaman ini setelah login berhasil.
+[ ] Ringkasan statistik database dan status server tampil secara akurat.
+[ ] HTMX poller memperbarui status kesehatan sistem secara otomatis tanpa refresh browser.
+[ ] Notifikasi darurat muncul seketika jika ada modul yang dinonaktifkan oleh Circuit Breaker.
+================================================================================
+
+================================================================================
+MODUL: DATABASE MIGRATION & SCHEMA MANAGER (CORE MODULE)
+================================================================================
+
+[GOAL]
+Mengotomatisasi instalasi dan pembaruan struktur tabel database untuk core framework 
+maupun modul pihak ketiga; mendukung sintaks multi-database (MySQL, PostgreSQL, 
+SQLite); serta memastikan isolasi nama database selalu ber-prefix 'IDIOT_'.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint:
+     - GET  /admin/migrations         (Daftar riwayat migrasi terinstal & pending)
+     - POST /admin/migrations/run     (Jalankan migrasi yang tertunda)
+     - POST /admin/migrations/rollback(Batalkan migrasi batch terakhir)
+   - Gate Guard: Eksklusif untuk 'superadmin'.
+
+2. Skema Database & Tracking:
+   - Tabel 'migrations':
+     - id (bigint, PK), module_slug (varchar), migration (varchar), batch (int), executed_at (timestamp).
+
+3. Dynamic Multi-DB Schema Runner:
+   - Setiap modul memiliki folder `Migrations/` berisi file skrip bertanggal 
+     (contoh: `2026_09_18_create_products_table.php`).
+   - Core Runner mendeteksi koneksi database aktif:
+     - Jika SQLite: sesuaikan tipe data auto-increment & foreign key pragmas.
+     - Jika PostgreSQL: gunakan syntax sequence / boolean native.
+     - Jika MySQL: gunakan format InnoDB standar.
+   - Module Installer Hook: Saat modul baru di-import via ZIP atau dibuat via Creator, 
+     sistem otomatis mengecek dan mengeksekusi file migrasi yang belum terpasang.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Seluruh skema database core ter-install secara seragam di MySQL, PostgreSQL, dan SQLite.
+[ ] File migrasi di folder modul otomatis dieksekusi saat modul pertama kali diaktifkan.
+[ ] Riwayat batch migrasi tercatat di tabel migrations.
+[ ] Operasi rollback berhasil menghapus tabel modul tanpa merusak tabel core lainnya.
+================================================================================
+
+================================================================================
+MODUL: SYSTEM LOG & CRASH MONITOR (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan antarmuka pembaca log internal framework untuk memeriksa error runtime, 
+aktivitas audit auth, serta jejak crash modul yang ditangkap oleh Circuit Breaker 
+tanpa harus membuka terminal server atau file mentah di storage.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint:
+     - GET  /admin/logs               (Tampilan log viewer dengan filter error/info)
+     - POST /admin/logs/clear         (Bersihkan file log tertentu)
+     - GET  /admin/logs/download      (Unduh file log mentah)
+   - Gate Guard: Hanya untuk 'superadmin'.
+
+2. Parser & File Log Reader:
+   - Membaca file di direktori `storage/logs/` (misal: `error.log`, `crash_module.log`).
+   - Log Streamer HTMX: Tombol refresh log menggunakan HTMX (`hx-get`) untuk 
+     memperbarui log terbaru secara instan.
+   - Crash Detail Inspector: Mengurai format stack trace PHP menjadi tampilan kartu 
+     rapi berisi nama modul pemicu, baris error, dan potongan kode penyebab masalah.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Seluruh error PHP dan catatan auto-kill Circuit Breaker tercatat di file log.
+[ ] Admin bisa membaca pesan error detail langsung dari antarmuka browser.
+[ ] Tersedia filter tingkat error (CRITICAL, ERROR, WARNING, INFO).
+[ ] File log dapat dibersihkan atau diunduh langsung dari panel.
+================================================================================
+
+================================================================================
+MODUL: MENU & NAVIGATION MANAGER (CORE MODULE)
+================================================================================
+
+[GOAL]
+Mengatur struktur navigasi web (Menu Header, Footer, dan Sidebar Admin) secara 
+hierarkis menggunakan antarmuka drag-and-drop; membatasi visibilitas item menu 
+berdasarkan hak akses/role pengguna; serta mendukung auto-discovery menu dari modul baru.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint:
+     - GET  /admin/menus              (Kanban/Tree builder struktur menu)
+     - POST /admin/menus/save-order   (AJAX endpoint penerima susunan hirarki baru)
+     - POST /admin/menus/item         (Tambah/edit item menu)
+     - POST /admin/menus/item/{id}/del(Hapus item menu)
+   - Gate Guard: Hanya untuk role 'superadmin'.
+
+2. Skema Database:
+   - Tabel 'menus':
+     - id (bigint, PK), location (varchar: 'public_header', 'admin_sidebar', 'footer'), name (varchar).
+   - Tabel 'menu_items':
+     - id (bigint, PK), menu_id (bigint, FK), parent_id (bigint, nullable), 
+       title (varchar), url (varchar), icon (varchar, nullable), 
+       target_role (varchar, default 'all': 'all', 'guest_only', 'member', 'admin'), 
+       sort_order (int, default 0).
+
+3. Drag-and-Drop Tree Interface & Auto-Register:
+   - Interaksi UI: Menyusun urutan link dan nesting (sub-menu / dropdown) via nested drag-and-drop.
+   - Auto-Discovery Modul: Saat modul baru terdaftar, rute halamannya otomatis muncul 
+     di panel "Available Links" agar admin tinggal menyeretnya ke dalam menu aktif.
+   - Dynamic Role Visibility: Link menu logout/profil otomatis hanya tampil jika user sudah login; 
+     link login/signup otomatis hanya tampil untuk guest.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] Admin bisa menyusun hirarki menu (parent dan sub-menu) via drag-and-drop.
+[ ] Perubahan urutan menu langsung tersimpan via AJAX/HTMX.
+[ ] Menu otomatis menyaring link berdasarkan kondisi login dan role pengunjung.
+[ ] Helper menu render di template layout menghasilkan HTML navigasi yang rapi.
+================================================================================
+
+
+================================================================================
+MODUL: MEDIA & FILE MANAGER (CORE MODULE)
+================================================================================
+
+[GOAL]
+Menyediakan repositori berkas dan gambar terpusat untuk kebutuhan seluruh modul 
+(avatar, logo, thumbnail modul); dilengkapi validasi tipe MIME yang ketat untuk 
+mencegah upload backdoor/eksekusi script PHP berbahaya; serta menyediakan modal 
+file picker yang terintegrasi dengan HTMX.
+
+--------------------------------------------------------------------------------
+[ACTION]
+
+1. Routing & Otorisasi:
+   - Endpoint:
+     - GET  /admin/media              (Galeri file explorer & uploader)
+     - POST /admin/media/upload       (Endpoint upload file via AJAX/HTMX)
+     - POST /admin/media/{id}/delete  (Hapus file & thumbnail dari storage)
+     - GET  /admin/media/picker       (Modal popup picker untuk dipanggil modul lain)
+   - Gate Guard: Role 'admin' dan 'superadmin'.
+
+2. Keamanan Penyimpanan & Anti-Malware (Strict Mime Validation):
+   - Pengecekan Ekstensi & MIME Type: Verifikasi isi file via `finfo_file()` / `mime_content_type()`.
+   - Blacklist Ketat: Blokir mutlak file berekstensi `.php`, `.phtml`, `.phar`, `.sh`, `.exe`, `.htaccess`.
+   - File Sanitization: Ubah nama file menjadi hash acak (misal: `img_65fa89b.webp`) 
+     untuk mencegah penimpaan file sistem dan eksploitasi path traversal.
+   - Eksekusi Script Dinonaktifkan: Folder `public/uploads/` dipasangi file konfigurasi 
+     server (`.htaccess` / config server) yang melarang eksekusi script PHP.
+
+3. Thumbnail Generator & Modal File Picker:
+   - Otomatis membuat versi thumbnail gambar (kompresi WebP ringan).
+   - Modal Picker: Modul lain (Global Config, Creator, dll.) bisa membuka modal 
+     `/admin/media/picker` via `hx-get` untuk memilih media yang langsung menyalin URL file ke input form.
+
+--------------------------------------------------------------------------------
+[TARGET / DEFINITION OF DONE]
+
+[ ] File gambar berhasil diunggah dan otomatis terkompresi/membuat thumbnail.
+[ ] Sistem memblokir upaya upload berkas berekstensi .php atau file skrip executable lainnya.
+[ ] Nama file teracak aman dan disimpan di folder public/uploads/.
+[ ] Modal media picker bisa dipanggil oleh modul lain untuk memilih gambar secara instan via HTMX.
+[ ] Penghapusan file dari panel admin otomatis membersihkan file fisik dari disk server.
+================================================================================
+
+================================================================================
+UI/UX & DESIGN SYSTEM GUIDELINES (CORE DIRECTIVE)
+================================================================================
+
+FILOSOFI DESAIN: MINIMALIST FLUENT
+
+Filosofi ini menggabungkan kesederhanaan visual (Minimalism) dengan alur interaksi yang luwes (Fluent) agar fokus pengguna tidak terdistraksi saat menggunakan MVP.
+
+1. Visual Lean & Whitespace Terarah
+- Gunakan palet warna terbatas (1 warna aksi utama, 1 warna netral, 1 warna status).
+- Terapkan skala tipografi yang jelas dan sistem spacing 8pt agar hierarki visual tegas tanpa perlu banyak garis tepi (border).
+
+2. Fluent Micro-Feedback
+- Berikan respons instan pada setiap aksi pengguna (efek hover, focus, atau pembukaan modal).
+- Gunakan transisi CSS yang sangat singkat (150ms - 200ms) agar antarmuka terasa hidup dan tidak kaku.
+
+3. Token Desain Terpusat
+- Kelola warna, jarak, dan border-radius menggunakan variabel CSS atau utility classes.
+- Struktur terpusat ini memudahkan iterasi desain tanpa perlu mengubah banyak kode UI.
+
+4. Responsive, minimal untuk tablet dan desktop.
+
+KOMPATIBILITAS DENGAN HTMX
+
+HTMX memperbarui halaman lewat pertukaran (swap) HTML parsial dari server. UI/UX dirancang agar transisi pergantian konten ini berjalan mulus dan terasa sehalus Single Page Application (SPA).
+
+1. State Loading & Indicator
+- Manfaatkan kelas bawaan .htmx-request untuk otomatis menampilkan spinner atau skeleton screen saat proses HTTP berjalan.
+- Gunakan wadah (container) bernilai tinggi atau lebar tetap untuk mencegah pergeseran tata letak (layout shift).
+
+2. Transisi Swap Mulus (CSS Transitions)
+- Terapkan kelas .htmx-swapping dan .htmx-settling untuk memberikan efek fade-in halus saat elemen baru masuk.
+- Hindari pergantian konten secara mendadak agar mata pengguna tidak kaget.
+
+3. Komposisi Komponen Parsial
+- Pecah UI menjadi komponen kecil (card, baris tabel, form) yang bisa di-render ulang secara independen menggunakan hx-target dan hx-swap="outerHTML".
+
+4. Interaksi Out-Of-Band (OOB)
+- Pakai hx-swap-oob="true" untuk memperbarui elemen pendukung di luar target utama (misalnya memperbarui badge counter atau memunculkan toast notification secara bersamaan).
